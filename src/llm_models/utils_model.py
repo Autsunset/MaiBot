@@ -85,6 +85,15 @@ EMBEDDING_TASK_NAMES = {"embedding", "image_embedding"}
 """嵌入类任务：向量空间必须保持一致，因此忽略配置里的选择策略，始终按配置顺序取第一个可用模型"""
 
 
+class VLMClientInitializationError(Exception):
+    """Keep the failed candidate available to the VLM fallback loop."""
+
+    def __init__(self, model_name: str, original_exception: Exception) -> None:
+        super().__init__(f"VLM client initialization failed: {model_name}")
+        self.model_name = model_name
+        self.original_exception = original_exception
+
+
 class RequestType(Enum):
     """请求类型枚举"""
 
@@ -959,7 +968,12 @@ class LLMOrchestrator:
 
         model_info = TempMethodsLLMUtils.get_model_info_by_name(selected_model_name)
         api_provider = TempMethodsLLMUtils.get_provider_by_name(model_info.api_provider)
-        client = client_registry.get_client_class_instance(api_provider)
+        try:
+            client = client_registry.get_client_class_instance(api_provider)
+        except Exception as exc:
+            if self.task_name != "vlm":
+                raise
+            raise VLMClientInitializationError(model_info.name, exc) from exc
         logger.debug(f"选择请求模型: {model_info.name} (策略: {strategy})")
         self._adjust_model_usage(model_info.name, usage_penalty_delta=1)
         return model_info, api_provider, client
@@ -1346,10 +1360,26 @@ class LLMOrchestrator:
         )
 
         for model_index in range(max_attempts):
-            model_info, api_provider, client = self._select_model(
-                exclude_models=failed_models_this_request,
-                model_name=model_name,
-            )
+            try:
+                model_info, api_provider, client = self._select_model(
+                    exclude_models=failed_models_this_request,
+                    model_name=model_name,
+                )
+            except VLMClientInitializationError as exc:
+                last_model_name = exc.model_name
+                last_exception = exc.original_exception
+                failed_models_this_request.add(exc.model_name)
+                # Client construction failed before acquiring a usage penalty.
+                self._adjust_model_usage(exc.model_name, penalty_delta=1)
+                frames = "\n".join(
+                    f"  {frame.filename}:{frame.lineno} in {frame.name}"
+                    for frame in traceback.extract_tb(last_exception.__traceback__)
+                )
+                logger.error(
+                    f"VLM client initialization failed: "
+                    f"model={exc.model_name}, type={type(last_exception).__name__}\n{frames}"
+                )
+                continue
             if request_type == RequestType.RESPONSE and force_stream_mode:
                 # 请求级副本也覆盖重试及候选模型切换，避免改变其他任务的流式设置。
                 model_info = model_info.model_copy(update={"force_stream_mode": True})
@@ -1399,6 +1429,11 @@ class LLMOrchestrator:
                     request,
                     model_info.name,
                 )
+                if self.task_name == "vlm" and not str(response.content or "").strip():
+                    raise ModelAttemptFailed(
+                        f"VLM model '{model_info.name}' returned no image description",
+                        original_exception=EmptyResponseException(),
+                    )
                 if self.request_type.startswith("maisaka."):
                     logger.debug(f"LLMOrchestrator[{self.request_type}] 模型 model={model_info.name} 已返回 API 响应")
                 response_tokens = response.usage.total_tokens if response.usage else 0

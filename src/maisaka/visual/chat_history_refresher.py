@@ -123,15 +123,15 @@ def log_pending_image_recognition_before_text_planner(
     return pending_count
 
 
-def log_tracked_image_recognition_completed(image_hash: str) -> None:
-    """当 planner 已遇到的待识别图片完成识别时记录一次日志。"""
+def log_tracked_image_recognition_completed(image_hash: str, *, succeeded: bool = True) -> None:
+    """在图片任务结束后清理等待状态，并通知监控刷新。"""
 
     if not image_hash:
         return
 
     if image_hash in _PLANNER_PENDING_IMAGE_HASHES:
         _PLANNER_PENDING_IMAGE_HASHES.remove(image_hash)
-        logger.info(f"非多模态 planner 等待中的图片已完成识别，image_hash={image_hash}")
+        logger.info(f"非多模态 planner 等待中的图片任务已结束，image_hash={image_hash}, succeeded={succeeded}")
 
     refreshers = _MONITOR_PENDING_IMAGE_REFRESHERS.pop(image_hash, [])
     for refresher in refreshers:
@@ -196,11 +196,7 @@ def _collect_pending_image_hashes(components: list[object]) -> list[str]:
 def _is_image_component_pending(component: ImageComponent) -> bool:
     if not component.binary_hash:
         return False
-    if _is_image_description_pending(component.binary_hash):
-        return True
-    if component.binary_data and not _lookup_cached_image_description(component.binary_hash):
-        return True
-    return False
+    return _is_image_description_pending(component.binary_hash)
 
 
 def _is_image_description_pending(image_hash: str) -> bool:
@@ -208,12 +204,9 @@ def _is_image_description_pending(image_hash: str) -> bool:
         return False
 
     try:
-        with get_db_session() as session:
-            statement = select(Images).filter_by(image_hash=image_hash, image_type=ImageType.IMAGE).limit(1)
-            image_record = session.exec(statement).first()
-            if image_record is None or image_record.no_file_flag:
-                return False
-            return not bool(image_record.vlm_processed)
+        from src.chat.image_system.image_manager import image_manager
+
+        return image_manager.is_description_pending(image_hash)
     except Exception as exc:
         logger.warning(f"读取图片识别状态失败，image_hash={image_hash}: {exc}")
         return False
@@ -230,6 +223,11 @@ def _refresh_pending_visual_components(components: list[object]) -> bool:
                 if image_description:
                     component.content = f"[图片：{image_description}]"
                     refreshed = True
+                elif not _is_image_description_pending(component.binary_hash):
+                    unavailable = "[图片：暂无可用的画面内容]"
+                    if component.content != unavailable:
+                        component.content = unavailable
+                        refreshed = True
             continue
 
         if isinstance(component, EmojiComponent):
@@ -254,7 +252,10 @@ def _should_refresh_image_component(component: ImageComponent) -> bool:
     """判断图片组件当前是否仍处于待补全文本的占位状态。"""
 
     normalized_content = component.content.strip()
-    return not normalized_content or normalized_content == "[图片，识别中.....]"
+    return not normalized_content or normalized_content in {
+        "[图片，识别中.....]",
+        "[图片：暂无可用的画面内容]",
+    }
 
 
 def _should_refresh_emoji_component(component: EmojiComponent) -> bool:

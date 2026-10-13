@@ -67,7 +67,9 @@ async def test_timed_out_request_is_sent_at_most_max_retry_times(
         http_client=httpx.AsyncClient(transport=httpx.MockTransport(always_time_out))
     )
     request = ResponseRequest(
-        model_info=ModelInfo(name="test-model", model_identifier="test-model", api_provider="test-provider"),
+        model_info=ModelInfo(
+            name="test-model", model_identifier="test-model", api_provider="test-provider", model_type="llm"
+        ),
         context_items=[],
     )
 

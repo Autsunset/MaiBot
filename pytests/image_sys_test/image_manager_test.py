@@ -1,6 +1,8 @@
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
+import asyncio
+import hashlib
 import importlib
 import importlib.util
 import sys
@@ -218,6 +220,8 @@ def _load_image_manager_module(tmp_path=None):
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
+    # Image-processing unit tests use the dummy VLM, not the user's config.
+    mod._is_vlm_task_configured = lambda: True
     # Redirect IMAGE_DIR to pytest's tmp_path when provided
     try:
         if tmp_path is not None:
@@ -353,3 +357,149 @@ async def test_cached_description_does_not_hide_save_failure(monkeypatch, tmp_pa
 
     with pytest.raises(OSError, match="磁盘写入失败"):
         await manager.get_image_description(image_bytes=b"abc")
+
+
+def _capture_completion_notifications(monkeypatch):
+    notify = Mock()
+    monkeypatch.setitem(
+        sys.modules,
+        "src.maisaka.visual.chat_history_refresher",
+        types.SimpleNamespace(log_tracked_image_recognition_completed=notify),
+    )
+    return notify
+
+
+@pytest.mark.asyncio
+async def test_background_failure_is_not_left_pending_and_can_be_retried(monkeypatch, tmp_path):
+    module = _load_image_manager_module(tmp_path)
+    manager = module.ImageManager()
+    image_bytes = b"test-image"
+    image_hash = hashlib.sha256(image_bytes).hexdigest()
+    notify = _capture_completion_notifications(monkeypatch)
+    build = AsyncMock(side_effect=AssertionError())
+    monkeypatch.setattr(manager, "_build_image_description_once", build)
+    warnings = []
+    monkeypatch.setattr(module.logger, "warning", warnings.append)
+
+    for attempt in range(2):
+        manager._schedule_description_build(image_hash, image_bytes)
+        task = manager._pending_description_tasks[image_hash]
+        assert manager.is_description_pending(image_hash)
+        result = await asyncio.gather(task, return_exceptions=True)
+        await asyncio.sleep(0)
+        assert isinstance(result[0], AssertionError)
+        assert not manager.is_description_pending(image_hash)
+        assert image_hash not in manager._pending_description_tasks
+        assert not manager._description_sync_tasks
+        assert build.await_count == attempt + 1
+
+    assert notify.call_count == 2
+    notify.assert_called_with(image_hash, succeeded=False)
+    assert "AssertionError" in warnings[0]
+    assert "_build_image_description_once" in warnings[0] or "_build_description_in_background" in warnings[0]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_background_build_cleans_up_and_notifies(monkeypatch, tmp_path):
+    module = _load_image_manager_module(tmp_path)
+    manager = module.ImageManager()
+    image_bytes = b"test-image"
+    image_hash = hashlib.sha256(image_bytes).hexdigest()
+    notify = _capture_completion_notifications(monkeypatch)
+    started = asyncio.Event()
+
+    async def wait_for_cancel(*args, **kwargs):
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(manager, "_build_image_description_once", wait_for_cancel)
+    manager._schedule_description_build(image_hash, image_bytes)
+    task = manager._pending_description_tasks[image_hash]
+    await started.wait()
+    assert manager.is_description_pending(image_hash)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    await asyncio.sleep(0)
+
+    assert not manager.is_description_pending(image_hash)
+    assert manager._active_description_builds == {}
+    notify.assert_called_once_with(image_hash, succeeded=False)
+
+
+@pytest.mark.asyncio
+async def test_sync_builds_keep_pending_until_the_last_build_finishes(monkeypatch, tmp_path):
+    module = _load_image_manager_module(tmp_path)
+    manager = module.ImageManager()
+    image_bytes = b"test-image"
+    image_hash = hashlib.sha256(image_bytes).hexdigest()
+    gates = [asyncio.Event(), asyncio.Event()]
+    started = asyncio.Event()
+    calls = 0
+
+    async def build(*args, **kwargs):
+        nonlocal calls
+        index = calls
+        calls += 1
+        if calls == 2:
+            started.set()
+        await gates[index].wait()
+        return DummyMaiImage()
+
+    monkeypatch.setattr(manager, "_build_image_description_once", build)
+    tasks = [asyncio.create_task(manager.build_image_description(image_bytes)) for _ in range(2)]
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2)
+        assert manager.is_description_pending(image_hash)
+        gates[0].set()
+        await tasks[0]
+        assert manager.is_description_pending(image_hash)
+        gates[1].set()
+        await tasks[1]
+        assert not manager.is_description_pending(image_hash)
+    finally:
+        for gate in gates:
+            gate.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_empty_description_is_not_saved_as_processed(monkeypatch, tmp_path):
+    module = _load_image_manager_module(tmp_path)
+    manager = module.ImageManager()
+    image = DummyMaiImage()
+    monkeypatch.setattr(manager, "_generate_image_description", AsyncMock(return_value=" \n"))
+    update = Mock()
+    monkeypatch.setattr(manager, "update_image_description", update)
+
+    with pytest.raises(module.EmptyResponseException):
+        await manager.build_image_description(b"test-image", saved_image=image)
+    assert image.description == ""
+    assert image.vlm_processed is False
+    assert not manager._active_description_builds
+    update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_background_error_log_does_not_dump_exception_payload(monkeypatch, tmp_path):
+    module = _load_image_manager_module(tmp_path)
+    manager = module.ImageManager()
+    warnings = []
+    secret = "sensitive-provider-payload"
+    monkeypatch.setattr(manager, "_build_image_description_once", AsyncMock(side_effect=ValueError(secret)))
+    monkeypatch.setattr(module.logger, "warning", warnings.append)
+
+    with pytest.raises(ValueError, match=secret):
+        await manager._build_description_in_background("test-image", b"test-image")
+    assert "ValueError" in warnings[0]
+    assert secret not in warnings[0]
+
+
+@pytest.mark.asyncio
+async def test_unconfigured_vlm_does_not_schedule_a_job(monkeypatch, tmp_path):
+    module = _load_image_manager_module(tmp_path)
+    manager = module.ImageManager()
+    monkeypatch.setattr(module, "_is_vlm_task_configured", lambda: False)
+
+    manager._schedule_description_build("test-image", b"test-image")
+    assert not manager.is_description_pending("test-image")
+    assert not manager._pending_description_tasks

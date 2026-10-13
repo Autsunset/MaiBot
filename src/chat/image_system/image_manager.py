@@ -1,10 +1,12 @@
 from datetime import datetime
 from pathlib import Path
+from threading import RLock
 from typing import Dict, Optional, Set
 
 import asyncio
 import base64
 import hashlib
+import traceback
 
 from rich.traceback import install
 from sqlmodel import select
@@ -15,6 +17,7 @@ from src.common.database.database_model import Images, ImageType
 from src.common.logger import get_logger
 from src.common.utils.image_path import resolve_stored_image_path, serialize_stored_image_path
 from src.config.config import config_manager
+from src.llm_models.exceptions import EmptyResponseException
 from src.prompt.prompt_manager import prompt_manager
 from src.services.llm_service import LLMServiceClient
 
@@ -54,9 +57,17 @@ class ImageManager:
         _ensure_image_dir_exists()
         self._pending_description_tasks: Dict[str, asyncio.Task[None]] = {}
         self._description_sync_tasks: Set[asyncio.Task[None]] = set()
+        self._active_description_builds: Dict[str, int] = {}
+        self._description_state_lock = RLock()
         self.cleanup_legacy_image_registration_records()
 
         logger.info("图片管理器初始化完成")
+
+    def is_description_pending(self, image_hash: str) -> bool:
+        """An unfinished cache record is not evidence of a running job."""
+        with self._description_state_lock:
+            task = self._pending_description_tasks.get(image_hash)
+            return image_hash in self._active_description_builds or (task is not None and not task.done())
 
     async def shutdown(self) -> None:
         """等待描述构建及其派生的记忆同步任务完成。"""
@@ -174,13 +185,14 @@ class ImageManager:
             logger.info("未配置 VLM 模型，跳过图片后台识别任务")
             return
 
-        if image_hash in self._pending_description_tasks:
-            return
+        with self._description_state_lock:
+            if image_hash in self._pending_description_tasks:
+                return
 
-        task = asyncio.create_task(
-            self._build_description_in_background(image_hash, image_bytes, saved_image=saved_image)
-        )
-        self._pending_description_tasks[image_hash] = task
+            task = asyncio.create_task(
+                self._build_description_in_background(image_hash, image_bytes, saved_image=saved_image)
+            )
+            self._pending_description_tasks[image_hash] = task
         task.add_done_callback(lambda finished_task: self._finalize_description_build(image_hash, finished_task))
 
     async def _build_description_in_background(
@@ -202,7 +214,15 @@ class ImageManager:
             await self.build_image_description(image_bytes, saved_image=saved_image)
             logger.debug(f"图片描述后台构建完成，哈希值: {image_hash}")
         except Exception as exc:
-            logger.warning(f"图片描述后台构建失败，哈希值: {image_hash}，错误: {exc}")
+            # Log stack locations without SDK payloads, image bytes or locals.
+            frames = "\n".join(
+                f"  {frame.filename}:{frame.lineno} in {frame.name}"
+                for frame in traceback.extract_tb(exc.__traceback__)
+            )
+            logger.warning(
+                f"图片描述后台构建失败，哈希值: {image_hash}，异常类型: {type(exc).__name__}\n{frames}"
+            )
+            raise
 
     def _finalize_description_build(self, image_hash: str, task: asyncio.Task[None]) -> None:
         """回收图片描述后台构建任务。
@@ -211,11 +231,21 @@ class ImageManager:
             image_hash: 图片哈希值。
             task: 已完成的后台任务。
         """
-        self._pending_description_tasks.pop(image_hash, None)
+        with self._description_state_lock:
+            if self._pending_description_tasks.get(image_hash) is task:
+                self._pending_description_tasks.pop(image_hash, None)
         try:
             task.result()
-        except Exception as exc:
-            logger.debug(f"图片描述后台任务结束时捕获异常，哈希值: {image_hash}，错误: {exc}")
+        except (asyncio.CancelledError, Exception) as exc:
+            logger.debug(
+                f"图片描述后台任务未完成，哈希值: {image_hash}，异常类型: {type(exc).__name__}"
+            )
+            try:
+                from src.maisaka.visual.chat_history_refresher import log_tracked_image_recognition_completed
+
+                log_tracked_image_recognition_completed(image_hash, succeeded=False)
+            except Exception as notify_exc:
+                logger.debug(f"通知图片描述失败状态时出现异常: {type(notify_exc).__name__}")
             return
 
 
@@ -419,6 +449,27 @@ class ImageManager:
         saved_image: Optional[MaiImage] = None,
     ) -> MaiImage:
         """在图片已保存的前提下生成或补齐图片描述。"""
+        image_hash = hashlib.sha256(image_bytes).hexdigest()
+        # The bot and WebUI may build the same image on separate event loops.
+        with self._description_state_lock:
+            self._active_description_builds[image_hash] = self._active_description_builds.get(image_hash, 0) + 1
+        try:
+            return await self._build_image_description_once(image_bytes, saved_image=saved_image)
+        finally:
+            with self._description_state_lock:
+                remaining = self._active_description_builds[image_hash] - 1
+                if remaining:
+                    self._active_description_builds[image_hash] = remaining
+                else:
+                    self._active_description_builds.pop(image_hash)
+
+    async def _build_image_description_once(
+        self,
+        image_bytes: bytes,
+        *,
+        saved_image: Optional[MaiImage] = None,
+    ) -> MaiImage:
+        """Build a description while the caller tracks its live state."""
         mai_image = saved_image or await self.ensure_image_saved(image_bytes)
         if not mai_image.image_format:
             await mai_image.calculate_hash_format()
@@ -428,7 +479,9 @@ class ImageManager:
             logger.info(f"未配置 VLM 模型，跳过图片识别: {mai_image.file_hash}")
             return mai_image
 
-        desc = await self._generate_image_description(image_bytes, mai_image.image_format)
+        desc = (await self._generate_image_description(image_bytes, mai_image.image_format)).strip()
+        if not desc:
+            raise EmptyResponseException(message="VLM returned an empty image description")
         mai_image.description = desc
         mai_image.vlm_processed = True
         if not self.update_image_description(mai_image):

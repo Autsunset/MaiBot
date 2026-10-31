@@ -91,3 +91,14 @@ https://github.com/Mai-with-u/plugin-repo/blob/main/CONTRIBUTING.md
 不用修改changelog.dev，改动应该都写changelog.md
 一般不写入changelog的内容：
 版本号提升或更新项目依赖
+
+## Autsunset Fork 工作约定
+
+- 本地开发仓库固定为 `/home/autsun/project/MaiBot`，后续 MaiBot 核心改动在这里完成，不再以 NAS 容器或 fnOS 临时补丁目录为开发源。
+- `origin` 是 `Autsunset/MaiBot`，`upstream` 是官方 `Mai-with-u/MaiBot`。日常维护 `main`，不得向官方直接推送。
+- 完成改动后先运行相关测试、检查敏感信息，再提交并推送到自己的 `origin`；用户已授权持续维护和上传自己的 fork。
+- 官方更新由我们手动检查、手动合并：先 `git fetch upstream`，审阅差异，再执行 `git merge upstream/main`、解决冲突、测试并推送。禁止自动定时合并、强制覆盖或丢弃本地改动。
+- 冲突必须理解后解决，不得对整批文件无脑选择 ours/theirs，也不得通过强推改写已有历史。
+- 仓库更新不等于生产部署。NAS 升级、容器重建和数据迁移需单独说明；不得顺带启用待生效挂载。
+- 禁止提交 API 密钥、实际运行配置、数据库、聊天记录、提示词快照、模型权重及其他用户运行数据。插件继续在各自独立仓库维护。
+- 迁移来源、保留的私有兼容补丁和同步流程见 `docs/autsun-fork-workflow.md`。

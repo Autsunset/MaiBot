@@ -17,6 +17,7 @@ RUN python -c "from pathlib import Path; assert Path('pyproject.toml').read_byte
 
 COPY . .
 RUN test -n "${SOURCE_REVISION}" \
+    && chmod +x docker-entrypoint.sh \
     && python -m compileall -q \
         src/llm_models/image_budget.py \
         src/llm_models/utils_model.py \

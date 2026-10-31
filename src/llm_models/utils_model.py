@@ -46,6 +46,7 @@ from src.llm_models.model_client.base_client import (
     client_registry,
 )
 from src.llm_models.generation_diagnostics import sanitize_diagnostic_url
+from src.llm_models.image_budget import get_request_image_limit, limit_context_images
 from src.llm_models.image_normalizer import normalize_context_images
 from src.llm_models.request_snapshot import (
     attach_request_snapshot,
@@ -1405,8 +1406,24 @@ class LLMOrchestrator:
                     else:
                         context_items = context_result
                 if request_type == RequestType.RESPONSE and context_items:
+                    # Start each model attempt from the factory's unchanged history.
+                    image_limit = get_request_image_limit(api_provider.base_url, model_info.model_identifier)
+                    removed_before = 0
+                    if image_limit is not None:
+                        context_items, removed_before = limit_context_images(context_items, image_limit)
                     # 图片解码、缩放及切图在线程池执行，避免阻塞 Bot 或 WebUI 事件循环。
-                    context_items = await asyncio.to_thread(normalize_context_images, context_items)
+                    context_items = await asyncio.to_thread(
+                        normalize_context_images, context_items, max_images=image_limit,
+                    )
+                    if image_limit is not None:
+                        # Long screenshots can create additional image segments.
+                        context_items, removed_after = limit_context_images(context_items, image_limit)
+                        if removed_before or removed_after:
+                            logger.info(
+                                f"[image-budget] model={model_info.name} provider={api_provider.name} "
+                                f"limit={image_limit} pre_normalize_omitted={removed_before} "
+                                f"post_normalize_omitted={removed_after}"
+                            )
                 request = self._build_client_request(
                     request_type=request_type,
                     model_info=model_info,

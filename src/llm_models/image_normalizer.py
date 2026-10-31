@@ -32,11 +32,16 @@ def _resize_image(image: Image.Image, scale: float) -> Image.Image:
     )
 
 
-def normalize_image_part(part: ContextImagePart) -> List[ContextImagePart]:
+def normalize_image_part(
+    part: ContextImagePart, max_segments: int = MODEL_IMAGE_MAX_SEGMENTS,
+) -> List[ContextImagePart]:
     """仅处理单边超过 8000 的图片；长图按顺序分段，其他图片等比例缩小。
 
     超限动图使用首帧，PNG 等图片保留透明通道。尺寸合规的图片保持原始数据。
     """
+    if max_segments < 1:
+        raise ValueError("max_segments must be positive")
+    segment_limit = min(max_segments, MODEL_IMAGE_MAX_SEGMENTS)
     try:
         image_bytes = base64.b64decode(part.image_base64, validate=True)
         image = Image.open(BytesIO(image_bytes))
@@ -57,8 +62,8 @@ def normalize_image_part(part: ContextImagePart) -> List[ContextImagePart]:
         else:
             # 先约束短边和最大总长度，再裁剪，避免极长图片生成无界数量的图片。
             max_length = (
-                MODEL_IMAGE_MAX_SIDE * MODEL_IMAGE_MAX_SEGMENTS
-                - MODEL_IMAGE_OVERLAP * (MODEL_IMAGE_MAX_SEGMENTS - 1)
+                MODEL_IMAGE_MAX_SIDE * segment_limit
+                - MODEL_IMAGE_OVERLAP * (segment_limit - 1)
             )
             scale = min(1.0, MODEL_IMAGE_MAX_SIDE / short_side, max_length / long_side)
             if scale < 1.0:
@@ -69,8 +74,8 @@ def normalize_image_part(part: ContextImagePart) -> List[ContextImagePart]:
                 max(
                     short_side * MODEL_IMAGE_SPLIT_RATIO,
                     math.ceil(
-                        (long_side + MODEL_IMAGE_OVERLAP * (MODEL_IMAGE_MAX_SEGMENTS - 1))
-                        / MODEL_IMAGE_MAX_SEGMENTS
+                        (long_side + MODEL_IMAGE_OVERLAP * (segment_limit - 1))
+                        / segment_limit
                     ),
                 ),
             )
@@ -102,8 +107,19 @@ def normalize_image_part(part: ContextImagePart) -> List[ContextImagePart]:
         return normalized_parts
 
 
-def normalize_context_images(items: List[ContextItem]) -> List[ContextItem]:
+def normalize_context_images(
+    items: List[ContextItem], max_images: int | None = None,
+) -> List[ContextItem]:
     """规范化请求中的全部图片，保留消息顺序、元信息以及未修改的历史对象。"""
+    image_count = sum(
+        isinstance(part, ContextImagePart)
+        for item in items
+        if isinstance(item, (SystemMessageItem, UserMessageItem, AssistantMessageItem))
+        for part in item.parts
+    )
+    if max_images is not None and max_images < image_count:
+        raise ValueError("Apply the image budget before normalization")
+    extra_segments = None if max_images is None else max_images - image_count
     normalized_items: List[ContextItem] = []
     for item in items:
         if not isinstance(item, (SystemMessageItem, UserMessageItem, AssistantMessageItem)):
@@ -113,7 +129,12 @@ def normalize_context_images(items: List[ContextItem]) -> List[ContextItem]:
         changed = False
         for part in item.parts:
             if isinstance(part, ContextImagePart):
-                images = normalize_image_part(part)
+                # Resize the whole screenshot when its split would exceed the
+                # remaining budget, rather than silently dropping its beginning.
+                segment_limit = MODEL_IMAGE_MAX_SEGMENTS if extra_segments is None else extra_segments + 1
+                images = normalize_image_part(part, max_segments=segment_limit)
+                if extra_segments is not None:
+                    extra_segments -= len(images) - 1
                 parts.extend(images)
                 changed = changed or len(images) != 1 or images[0] is not part
             else:

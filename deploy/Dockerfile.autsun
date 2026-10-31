@@ -1,0 +1,24 @@
+ARG MAIBOT_BASE=sengokucola/maibot@sha256:e062a98f6820fa4b2bf62e0ace83cbf4cf92216fd4049d11aecd928cd3bd0532
+FROM ${MAIBOT_BASE}
+
+ARG SOURCE_REVISION
+LABEL org.opencontainers.image.source="https://github.com/Autsunset/MaiBot" \
+      org.opencontainers.image.url="https://github.com/Autsunset/MaiBot" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}" \
+      org.opencontainers.image.version="1.3.19-autsun" \
+      io.autsun.maibot.upstream-revision="c6429547af711555e3d4d1b8d04b413572cb616c"
+
+WORKDIR /MaiMBot
+
+# Reuse dependencies only when the fork matches the pinned runtime manifest.
+COPY pyproject.toml /tmp/maibot-fork-pyproject.toml
+RUN python -c "from pathlib import Path; assert Path('pyproject.toml').read_bytes() == Path('/tmp/maibot-fork-pyproject.toml').read_bytes(), 'Dependency manifest changed; rebuild the full runtime instead'" \
+    && rm /tmp/maibot-fork-pyproject.toml
+
+COPY . .
+RUN test -n "${SOURCE_REVISION}" \
+    && python -m compileall -q \
+        src/llm_models/image_budget.py \
+        src/llm_models/utils_model.py \
+        src/llm_models/image_normalizer.py \
+        src/maisaka/visual/message_limiter.py

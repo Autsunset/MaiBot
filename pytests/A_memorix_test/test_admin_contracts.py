@@ -116,6 +116,8 @@ def test_fuzzy_modify_admin_uses_correction_action_set() -> None:
         ("memory_feedback_admin", "list"),
         ("memory_fact_admin", "create"),
         ("memory_runtime_admin", "get_config"),
+        ("memory_runtime_admin", "list_vector_spaces"),
+        ("memory_runtime_admin", "delete_vector_space"),
         ("memory_import_admin", "settings"),
         ("memory_bundle_admin", "list"),
         ("memory_tuning_admin", "settings"),

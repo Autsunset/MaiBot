@@ -336,7 +336,7 @@ class AMemorixHostService:
                 return exc.to_response()
             result = await dispatch_admin_command(kernel, command)
             if command.component_name == "memory_runtime_admin" and isinstance(result, dict):
-                return {**result, **self._startup_status_payload()}
+                return {**self._startup_status_payload(), **result}
             return result
 
         raise RuntimeError(f"不支持的 A_Memorix 调用: {component_name}")

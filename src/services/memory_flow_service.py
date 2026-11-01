@@ -971,6 +971,11 @@ class ImageMemoryWritebackService:
         session = await asyncio.to_thread(chat_manager.get_existing_session_by_session_id, item["chat_id"])
         if session is None:
             return {"success": True, "eligible": False, "reason": "source_chat_unavailable"}
+        source_messages = await asyncio.to_thread(
+            find_messages, session_id=item["chat_id"], message_id=item["message_id"], limit=1
+        )
+        if not source_messages:
+            return {"success": True, "eligible": False, "reason": "source_message_unavailable"}
         if dry_run:
             return preview
 

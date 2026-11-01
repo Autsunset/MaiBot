@@ -110,6 +110,7 @@ def wire_live_service(monkeypatch, metadata, service, *, chat_exists=True):
     from src.chat.message_receive.chat_manager import chat_manager
 
     monkeypatch.setattr(chat_manager, "get_existing_session_by_session_id", lambda _: object() if chat_exists else None)
+    monkeypatch.setattr(flow, "find_messages", lambda **_: [object()])
 
     async def image_memory(*, action, **kwargs):
         if action == "prepare_description_recovery":
@@ -134,6 +135,18 @@ async def test_preview_never_claims_or_calls_models(failed_jobs, tmp_path, monke
     assert row(metadata, targets[0])["attempt_count"] == 6
     assert not service._journal_path.exists()
     generate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_missing_anchor_cannot_summarize_a_neighboring_window(failed_jobs, tmp_path, monkeypatch):
+    metadata, targets = failed_jobs
+    service = flow.ImageMemoryWritebackService(tmp_path / "recovery.sqlite3")
+    wire_live_service(monkeypatch, metadata, service)
+    monkeypatch.setattr(flow, "find_messages", lambda **_: [])
+    result = await service.recover_description_compensation(**targets[0], dry_run=False)
+    assert result["reason"] == "source_message_unavailable" and not result["eligible"]
+    assert row(metadata, targets[0])["attempt_count"] == 6
+    assert not service._journal_path.exists()
 
 
 @pytest.mark.asyncio

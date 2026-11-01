@@ -955,8 +955,11 @@ class EmojiManager:
                         logger.info(f"[register_emoji] 成功替换并注册新表情包: {new_emoji.description}")
                         return "registered"
                     if register_status == "skipped":
-                        logger.info(f"[register_emoji] Replacement emoji was already registered: {new_emoji.description}")
-                        return "skipped"
+                        logger.warning(
+                            f"[register_emoji] Replacement candidate was already registered after unregister; "
+                            f"replacement is incomplete: {new_emoji.description}"
+                        )
+                        return "failed"
                     else:
                         logger.error(f"[register_emoji] Failed to register replacement emoji: {new_emoji.description}")
                 else:

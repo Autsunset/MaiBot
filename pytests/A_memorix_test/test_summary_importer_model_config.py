@@ -14,6 +14,7 @@ from src.A_memorix.core.utils.summary_importer import (
     _normalize_relation_items,
 )
 from src.config.model_configs import TaskConfig
+from src.llm_models.payload_content.resp_format import RespFormatType
 from src.common.prompt_i18n import load_prompt
 from src.services import llm_service as llm_api
 
@@ -257,6 +258,7 @@ async def test_empty_incremental_summary_is_successful_noop(monkeypatch) -> None
 
     async def fake_generate(request):
         assert "用户喜欢绿茶" in request.prompt
+        assert request.response_format.format_type is RespFormatType.JSON_OBJ
         return SimpleNamespace(
             success=True,
             completion=SimpleNamespace(

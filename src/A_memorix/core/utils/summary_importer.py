@@ -21,6 +21,7 @@ from src.common.logger import get_logger
 from src.common.prompt_i18n import extract_prompt_placeholders, load_prompt, load_prompt_template
 from src.config.config import config_manager, global_config
 from src.config.model_configs import TaskConfig
+from src.llm_models.payload_content.resp_format import RespFormat, RespFormatType
 from src.services import llm_service as llm_api
 from src.services import message_service as message_api
 
@@ -853,6 +854,7 @@ class SummaryImporter:
                     prompt=prompt,
                     temperature=model_config_to_use.temperature,
                     max_tokens=model_config_to_use.max_tokens,
+                    response_format=RespFormat(format_type=RespFormatType.JSON_OBJ),
                 )
             )
             success = bool(result.success)

@@ -23,6 +23,27 @@ class PendingLearningBuffer(Generic[T]):
     def snapshot(self) -> List[T]:
         return list(self._items.values())
 
+    def bounded_snapshot(
+        self,
+        text: Callable[[T], str],
+        *,
+        max_messages: int = 20,
+        max_chars: int = 6000,
+    ) -> List[T]:
+        """按原始顺序取完整消息，余下素材留待后续批次，不截断来源正文。"""
+        if max_messages < 1 or max_chars < 1:
+            raise ValueError("学习批次的消息数和字符数上限必须为正数")
+        result: List[T] = []
+        chars = 0
+        for item in self._items.values():
+            size = len(text(item))
+            # 单条超长消息独占批次，避免其阻塞队首或被静默丢弃。
+            if result and (len(result) >= max_messages or chars + size > max_chars):
+                break
+            result.append(item)
+            chars += size
+        return result
+
     def discard(self, items: Iterable[T]) -> None:
         """只消费已取得执行名额的批次，不影响运行期间收进来的新素材。"""
         for item in items:

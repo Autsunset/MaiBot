@@ -138,8 +138,8 @@ class JargonLearner:
 
         self.learning_retry_blocked = False
         self.collect_context_messages(context_messages)
-        source_items = self.pending_messages.snapshot()
-        if len(source_items) < self.min_messages_for_extraction:
+        source_items = self.pending_messages.bounded_snapshot(lambda item: item.content)
+        if len(self.pending_messages) < self.min_messages_for_extraction:
             self.learning_status = "waiting" if source_items else "skipped"
             self.learning_detail = (
                 self.pending_messages.waiting_detail(self.min_messages_for_extraction)
@@ -237,14 +237,16 @@ class JargonLearner:
                 )
             return False
 
-        self.pending_messages.discard(pending_messages)
         try:
-            return await self._run_learning_batch(
+            result = await self._run_learning_batch(
                 pending_messages,
                 learning_session_id=learning_session_id,
                 jargon_miner=jargon_miner,
                 learned_contents=learned_contents,
             )
+            if self.learning_status != "failed":
+                self.pending_messages.discard(pending_messages)
+            return result
         finally:
             await jargon_learning_batch_gate.release(learning_session_id)
 
@@ -286,6 +288,7 @@ class JargonLearner:
             )
             response = generation_result.response
         except Exception as e:
+            self.learning_status, self.learning_detail = "failed", f"模型请求失败: {type(e).__name__}"
             logger.error(f"学习黑话失败: {e}")
             if learned_contents is not None:
                 raise

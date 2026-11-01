@@ -13,7 +13,8 @@ from .expression_style_utils import normalize_expression_style_for_learning
 
 logger = get_logger("expression_utils")
 
-judge_llm = LLMServiceClient(task_name="learner", request_type="expression.check")
+# 单条适用性检查与批量提取分开路由，避免短判断消耗学习模型的长思考预算。
+judge_llm = LLMServiceClient(task_name="fast_model", request_type="expression.check")
 
 
 def _normalize_repair_json_result(repaired_result: Any) -> str:

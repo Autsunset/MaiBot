@@ -424,6 +424,7 @@ async def test_person_receipt_resumes_without_rejudging_or_duplicating_evidence(
         metadata_store=store,
         embedding_manager=None,
         vector_store=None,
+        _paragraph_store=lambda: None,
         initialize=AsyncMock(),
         _is_chat_filtered=lambda **kwargs: False,
         _persist=persist,

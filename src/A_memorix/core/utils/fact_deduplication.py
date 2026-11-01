@@ -15,6 +15,7 @@ import unicodedata
 
 from src.common.prompt_i18n import load_prompt
 from src.services import llm_service
+from src.llm_models.payload_content.resp_format import RespFormat, RespFormatType
 
 from .hash import compute_hash
 
@@ -333,6 +334,7 @@ class FactDeduplicator:
                         ),
                     ),
                     temperature=0.0,
+                    response_format=RespFormat(format_type=RespFormatType.JSON_OBJ),
                 )
             )
             if not response.success:
@@ -357,9 +359,13 @@ class FactDeduplicator:
                 if fact_id in fixed:
                     decisions.append(fixed[fact_id])
                 elif action == "reuse":
-                    if row.get("target_id") not in allowed:
-                        raise ValueError("去重目标不属于当前候选")
-                    decisions.append({"fact_id": fact_id, "action": action, "target": allowed[row["target_id"]]})
+                    target_id = row.get("target_id")
+                    if not isinstance(target_id, str) or target_id not in allowed:
+                        raise ValueError(
+                            f"去重目标不属于当前候选: fact_id={fact_id!r}, target_id={target_id!r}, "
+                            f"allowed_target_ids={list(allowed)!r}"
+                        )
+                    decisions.append({"fact_id": fact_id, "action": action, "target": allowed[target_id]})
                 else:
                     possible = row.get("candidate_ids", [])
                     if (

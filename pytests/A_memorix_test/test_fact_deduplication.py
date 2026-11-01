@@ -14,6 +14,7 @@ from src.A_memorix.core.storage.metadata_store import MetadataStore
 from src.A_memorix.core.utils.fact_deduplication import FactDeduplicator, fact_scope_lock, observation_id
 from src.A_memorix.core.utils.summary_importer import SummaryImporter
 from src.services import llm_service
+from src.llm_models.payload_content.resp_format import RespFormatType
 
 
 @pytest.fixture
@@ -56,6 +57,7 @@ def model(monkeypatch, decide, supports=None):
     requests = []
 
     async def generate(request):
+        assert request.response_format.format_type is RespFormatType.JSON_OBJ
         payload = json.loads(request.prompt[request.prompt.index("{") :])
         requests.append(payload)
         return SimpleNamespace(
@@ -337,6 +339,40 @@ async def test_invalid_model_target_does_not_write(store, monkeypatch):
             scope_type="person", scope_id="qq:1", facts=[{"fact_id": "f1", "text": "甲偏爱喝绿茶。"}], source=source(2)
         )
     assert len(store.query("SELECT * FROM fact_claims")) == 1
+
+
+@pytest.mark.asyncio
+async def test_target_cannot_be_borrowed_from_another_facts_candidates(store, monkeypatch):
+    dedup = FactDeduplicator(store)
+    monkeypatch.setattr(
+        dedup, "_candidates",
+        lambda scope_type, scope_id, text, paragraph_ids: [
+            {"id": "claim:a" if text == "new alpha" else "claim:b", "text": "older " + text}
+        ],
+    )
+    first = {}
+
+    def decide(fact, candidates):
+        if fact["fact_id"] == "f1":
+            first["target"] = candidates[0]["id"]
+            return {"fact_id": "f1", "action": "keep"}
+        assert first["target"] not in {candidate["id"] for candidate in candidates}
+        return {"fact_id": "f2", "action": "reuse", "target_id": first["target"]}
+
+    model(monkeypatch, decide)
+    with pytest.raises(ValueError, match="fact_id='f2'.*allowed_target_ids"):
+        await dedup.plan(
+            scope_type="chat", scope_id="chat-a", source=source(),
+            facts=[{"fact_id": "f1", "text": "new alpha"}, {"fact_id": "f2", "text": "new beta"}],
+        )
+    assert store.query("SELECT * FROM fact_claims") == []
+
+
+@pytest.mark.parametrize("locale", ["zh-CN", "en-US", "ja-JP"])
+def test_dedup_prompt_explicitly_scopes_candidate_ids_to_each_fact(locale):
+    from src.common.prompt_i18n import load_prompt
+
+    assert "candidates[fact_id]" in load_prompt("a_memorix_fact_deduplication", locale=locale, payload="{}")
 
 
 @pytest.mark.asyncio

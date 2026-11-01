@@ -57,3 +57,38 @@ image. Merely switching the image back is not a complete rollback.
 
 Deployment receipts and backups belong in private operational storage, never
 in Git. GitHub pushes and upstream merges do not deploy the NAS automatically.
+
+## Isolated local speech recognition
+
+The NAS has a separate FunASR service at `/vol1/1000/docker/funasr`, managed by
+its own `compose.yaml` and the `funasr-asr` container. Its image is
+`funasr-sensevoice:v0.2.6-vulkan-20261102`. This does not replace or reconfigure
+the existing `llama-cpp` model router.
+
+- The FunASR `runtime-llamacpp-v0.2.6` Vulkan binary runs
+  `models/sensevoice-small-f16.gguf` with an explicit `--backend vulkan`.
+- The model belongs to the FunASR directory, not the existing llama.cpp models
+  directory. Its original SHA-256 is preserved.
+- A small standard-library HTTP layer provides authenticated
+  `/v1/audio/transcriptions` and `/v1/models` endpoints. FFmpeg normalizes
+  supported audio to 16 kHz mono PCM before inference.
+- The API has bounded uploads, audio duration, queueing and native execution.
+  One GPU inference runs at a time; each request starts a native process.
+  The public fixture `samples/asr_example_zh.wav` is a required startup GPU
+  recognition check, not a disposable user upload.
+- Only loopback port `18083` is published. MaiBot reaches the service over its
+  existing Docker network. The independent API key stays in
+  `secrets/api-key.txt`, not Compose environment variables or Git.
+
+The production provider is `FunASR-LocalGPU`, and the `voice` task selects
+`SenseVoice-small`. This configuration is hot-reloaded; old cloud model entries
+remain available but are not automatic voice fallbacks. Other task assignments
+are preserved. The ordinary chat-model test is not an ASR test; verify using
+the transcription interface or an actual incoming voice message.
+
+Private receipts are under the service's `deployments/` directory. The
+pre-change MaiBot configuration and voice verification receipts are under
+`data/maintenance/funasr-20261102/` in core. Review later changes before restoring
+a whole configuration backup; do not overwrite unrelated subsequent edits.
+ASR maintenance must target its own Compose project, never recreate the
+existing model router, core or NapCat as an incidental dependency.

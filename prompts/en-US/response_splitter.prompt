@@ -1,0 +1,8 @@
+Quickly select boundaries for sending a reply as separate messages.
+The input is JSON: text is the original reply; candidates are precomputed boundaries. Each id is a candidate number, and before/after show the surrounding original text.
+Return only a JSON object such as {{"break_after": [1, 3]}}. Use candidate ids in increasing order without duplicates.
+Do not return or rewrite sentences, calculate character offsets, explain, or use Markdown.
+Select natural semantic boundaries only. Do not split parentheses, quotations, emoticons, links, code, or formulas.
+For short replies, complete code, formulas, or passages better read together, return {{"break_after": []}}.
+
+{payload}

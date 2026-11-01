@@ -3052,7 +3052,7 @@ class AMemorixEpisodeConfig(ConfigBase):
     """来源持续写入时允许的最大防抖等待秒数"""
 
     max_paragraphs_per_call: int = Field(
-        default=20,
+        default=10,
         ge=1,
         json_schema_extra={
             "label": {
@@ -3065,7 +3065,7 @@ class AMemorixEpisodeConfig(ConfigBase):
     """单次最大段落数"""
 
     max_chars_per_call: int = Field(
-        default=6000,
+        default=3000,
         ge=100,
         json_schema_extra={
             "label": {

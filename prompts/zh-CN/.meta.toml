@@ -217,3 +217,28 @@ description = "外接 Planner 中断恢复。"
 display_name = "外接 Planner 继续执行"
 advanced = true
 description = "外接 Planner 继续执行。"
+
+[response_splitter]
+display_name = "回复边界选择"
+advanced = true
+description = "只选择原文候选边界，由代码切片，避免断句模型改写正文。"
+
+[maisaka_expression_selector]
+display_name = "聊天表达选择"
+advanced = true
+description = "根据聊天情景选择可用的表达方式。"
+
+[maisaka_replyer_document]
+display_name = "文章与帖子写作"
+advanced = true
+description = "结合材料以机器人自身身份撰写完整文章或社区帖子。"
+
+[maisaka_wait_reminder]
+display_name = "连续等待提醒"
+advanced = true
+description = "提醒规划器延长等待或结束持续等待的会话。"
+
+[reply_supplement]
+display_name = "回复补充"
+advanced = true
+description = "为已决定发送的回复选择引用、附件和提及，不重写正文。"

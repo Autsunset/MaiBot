@@ -34,6 +34,11 @@ async def test_asset_publication_process_exit_is_reconciled(tmp_path: Path, stag
 from pathlib import Path
 import os
 import sys
+# 子进程不继承父进程内存中的配置，不能依赖本机运行配置或测试启动器。
+from src.config.config import Config, ModelConfig, config_manager
+from src.config.default_model_config import create_default_model_config
+config_manager.global_config = Config()
+config_manager.model_config = create_default_model_config(ModelConfig)
 from pytests.A_memorix_test.test_image_memory_runtime import _runtime, _Embedder, _png
 metadata, runtime = _runtime(Path(sys.argv[1]), _Embedder())
 payload = _png((80, 90, 100))

@@ -667,7 +667,7 @@
         "max_paragraphs_per_call": {
           "name": "max_paragraphs_per_call",
           "type": "integer",
-          "default": 20,
+          "default": 10,
           "description": "单次最大段落数",
           "label": "单次最大段落数",
           "ui_type": "number",
@@ -684,7 +684,7 @@
         "max_chars_per_call": {
           "name": "max_chars_per_call",
           "type": "integer",
-          "default": 6000,
+          "default": 3000,
           "description": "单次最大字符数",
           "label": "单次最大字符数",
           "ui_type": "number",

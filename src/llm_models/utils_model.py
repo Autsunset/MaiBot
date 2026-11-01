@@ -70,6 +70,7 @@ from src.llm_models.utils import compress_messages, llm_usage_recorder
 from src.services.model_task_usage_service import track_model_task_usage
 
 from .request_admission import ModelQueueFullError, ModelQueueTimeoutError, model_request_admission
+from .request_timing import summarize_request_timing
 
 install(extra_lines=3)
 
@@ -320,6 +321,7 @@ class LLMOrchestrator:
             output_items=response.output_items,
             generation_trace=response.generation_trace,
             generation_attempts=response.generation_attempts,
+            request_timings=dict(response.request_timings),
             model_name=model_name,
             prompt_tokens=response.usage.prompt_tokens if response.usage is not None else 0,
             completion_tokens=response.usage.completion_tokens if response.usage is not None else 0,
@@ -1323,6 +1325,7 @@ class LLMOrchestrator:
         """
         timeout_s = self.model_for_task.hard_timeout
         model_info = request.model_info
+        queue_started = time.perf_counter()
         try:
             # 先取得模型名额再开始推理计时，避免单槽模型的后台排队耗尽 hard_timeout。
             async with model_request_admission.slot(
@@ -1331,6 +1334,8 @@ class LLMOrchestrator:
                 max_queue_size=model_info.max_queue_size,
                 queue_timeout=model_info.queue_timeout,
             ) as queue_wait:
+                if request.trace_context is not None:
+                    request.trace_context.queue_wait_seconds += queue_wait
                 if model_info.max_concurrency and queue_wait >= 0.05:
                     logger.info(
                         f"[model-admission] model={model_name} provider={api_provider.name} "
@@ -1341,6 +1346,8 @@ class LLMOrchestrator:
                     timeout=timeout_s,
                 )
         except (ModelQueueFullError, ModelQueueTimeoutError) as error:
+            if request.trace_context is not None:
+                request.trace_context.queue_wait_seconds += time.perf_counter() - queue_started
             snapshot_path = await asyncio.to_thread(
                 save_failed_request_snapshot,
                 api_provider=api_provider,
@@ -1378,6 +1385,20 @@ class LLMOrchestrator:
             )
             attach_request_snapshot(timeout_error, snapshot_path)
             raise timeout_error from e
+
+    def _record_request_timing(
+        self, trace: RequestTraceContext, started: float, *, status: str
+    ) -> Dict[str, float]:
+        timing = summarize_request_timing(
+            trace.generation_attempts, total_seconds=time.perf_counter() - started,
+            queue_seconds=trace.queue_wait_seconds,
+        )
+        fields = " ".join(f"{name}={seconds:.3f}" for name, seconds in timing.items())
+        logger.info(
+            f"[llm-timing] task={self.request_type or self.task_name} status={status} "
+            f"attempts={len(trace.generation_attempts)} {fields} business_outcome=not_evaluated"
+        )
+        return timing
 
     async def _execute_request(
         self,
@@ -1418,6 +1439,7 @@ class LLMOrchestrator:
         Returns:
             LLMExecutionResult: 单次模型执行结果对象。
         """
+        timing_started = time.perf_counter()
         failed_models_this_request: Set[str] = set()
         max_attempts = 1 if str(model_name or "").strip() else len(self.model_for_task.model_list)
         last_exception: Optional[Exception] = None
@@ -1502,6 +1524,7 @@ class LLMOrchestrator:
                     logger.debug(f"LLMOrchestrator[{self.request_type}] 模型 model={model_info.name} 已返回 API 响应")
                 response_tokens = response.usage.total_tokens if response.usage else 0
                 self._adjust_model_usage(model_info.name, tokens_delta=response_tokens, usage_penalty_delta=-1)
+                response.request_timings = self._record_request_timing(trace_context, timing_started, status="succeeded")
                 return LLMExecutionResult(
                     api_response=response,
                     model_info=model_info,
@@ -1509,6 +1532,7 @@ class LLMOrchestrator:
                 )
 
             except (ReqAbortException, asyncio.CancelledError) as e:
+                self._record_request_timing(trace_context, timing_started, status="cancelled")
                 self._adjust_model_usage(model_info.name, usage_penalty_delta=-1)
                 if self.request_type.startswith("maisaka."):
                     logger.debug(
@@ -1542,6 +1566,7 @@ class LLMOrchestrator:
                     continue
 
         logger.error(f"所有 {max_attempts} 个模型均尝试失败。")
+        self._record_request_timing(trace_context, timing_started, status="failed")
         if last_exception:
             await asyncio.to_thread(mark_request_final_failure, last_exception)
             self._schedule_llm_error_event(

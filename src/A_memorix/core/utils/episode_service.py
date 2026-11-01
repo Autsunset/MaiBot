@@ -130,8 +130,8 @@ class EpisodeService:
             "materialization_version": self.MATERIALIZATION_VERSION,
             "segmentation": dict(self.segmentation_service.generation_signature()),
             "grouping": {
-                "max_paragraphs_per_call": max(1, int(self._cfg("episode.max_paragraphs_per_call", 20))),
-                "max_chars_per_call": max(200, int(self._cfg("episode.max_chars_per_call", 6000))),
+                "max_paragraphs_per_call": max(1, int(self._cfg("episode.max_paragraphs_per_call", 10))),
+                "max_chars_per_call": max(200, int(self._cfg("episode.max_chars_per_call", 3000))),
                 "source_time_window_seconds": max(
                     60.0,
                     float(self._cfg("episode.source_time_window_hours", 24)) * 3600.0,
@@ -199,8 +199,8 @@ class EpisodeService:
             "source": str(group.get("source", "") or "").strip(),
             "segmentation_generation": segmentation_generation,
             "grouping": {
-                "max_paragraphs_per_call": max(1, int(self._cfg("episode.max_paragraphs_per_call", 20))),
-                "max_chars_per_call": max(200, int(self._cfg("episode.max_chars_per_call", 6000))),
+                "max_paragraphs_per_call": max(1, int(self._cfg("episode.max_paragraphs_per_call", 10))),
+                "max_chars_per_call": max(200, int(self._cfg("episode.max_chars_per_call", 3000))),
                 "source_time_window_hours": max(
                     60.0,
                     float(self._cfg("episode.source_time_window_hours", 24)) * 3600.0,
@@ -248,8 +248,8 @@ class EpisodeService:
         if not paragraphs:
             return []
 
-        max_paragraphs = max(1, int(self._cfg("episode.max_paragraphs_per_call", 20)))
-        max_chars = max(200, int(self._cfg("episode.max_chars_per_call", 6000)))
+        max_paragraphs = max(1, int(self._cfg("episode.max_paragraphs_per_call", 10)))
+        max_chars = max(200, int(self._cfg("episode.max_chars_per_call", 3000)))
         window_seconds = max(
             60.0,
             float(self._cfg("episode.source_time_window_hours", 24)) * 3600.0,

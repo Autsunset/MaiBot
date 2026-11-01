@@ -21,13 +21,20 @@ from src.config.config import global_config
 from src.person_info.person_info import Person, get_person_id, store_person_memory_from_answer
 from src.services import memory_service as memory_service_module
 from src.services.memory_service import memory_service
+from src.A_memorix.core.image.asset_store import ImageAssetStore, ImageAssetValidationError
 from src.A_memorix.core.image.component_paths import build_chat_external_ref, iter_message_image_components
 from src.A_memorix.host_service import a_memorix_host_service
 
-from .image_writeback_journal import ImageWritebackJournal
+from .image_writeback_journal import ImageWritebackJournal, image_error_details
 from .person_fact_reverification import reclassify_historical_person_facts
 
 logger = get_logger("memory_flow_service")
+
+
+def _image_error_retryable(error: BaseException) -> bool:
+    if isinstance(error, BaseExceptionGroup):
+        return any(_image_error_retryable(child) for child in error.exceptions)
+    return not isinstance(error, ImageAssetValidationError)
 
 
 @dataclass
@@ -761,14 +768,19 @@ class ImageMemoryWritebackService:
         self._worker_task: Optional[asyncio.Task] = None
         self._compensation_task: Optional[asyncio.Task] = None
         self._stopping = False
+        self._lifecycle_lock = asyncio.Lock()
 
     async def start(self) -> None:
+        async with self._lifecycle_lock:
+            await self._start_locked()
+
+    async def _start_locked(self) -> None:
         if self._worker_task is not None and not self._worker_task.done():
             return
         if not self._enabled():
             return
         if self._journal is None:
-            self._journal = ImageWritebackJournal(self._journal_path)
+            self._journal = await asyncio.to_thread(ImageWritebackJournal, self._journal_path)
         self._stopping = False
         self._worker_task = asyncio.create_task(self._worker_loop(), name="A_Memorix.image_writeback")
         self._compensation_task = asyncio.create_task(
@@ -777,6 +789,10 @@ class ImageMemoryWritebackService:
         )
 
     async def shutdown(self) -> None:
+        async with self._lifecycle_lock:
+            await self._shutdown_locked()
+
+    async def _shutdown_locked(self) -> None:
         self._stopping = True
         worker = self._worker_task
         compensation = self._compensation_task
@@ -792,7 +808,7 @@ class ImageMemoryWritebackService:
                 pass
 
         if self._journal is not None:
-            self._journal.close()
+            await asyncio.to_thread(self._journal.close)
             self._journal = None
 
     async def enqueue(self, message: Any) -> None:
@@ -804,7 +820,7 @@ class ImageMemoryWritebackService:
             await self.start()
         if self._journal is None:
             raise RuntimeError("图片写回服务初始化未完成")
-        self._journal.enqueue(str(message.session_id), str(message.message_id))
+        await asyncio.to_thread(self._journal.enqueue, str(message.session_id), str(message.message_id))
 
     @staticmethod
     def _enabled() -> bool:
@@ -847,22 +863,28 @@ class ImageMemoryWritebackService:
                 continue
             if self._journal is None:
                 raise RuntimeError("图片写回任务库未初始化")
-            job = self._journal.next_job()
+            job = await asyncio.to_thread(self._journal.next_job)
             if job is None:
                 await asyncio.sleep(max(0.1, global_config.a_memorix.image_memory.job_poll_interval_seconds))
                 continue
             try:
-                messages = find_messages(session_id=job["session_id"], message_id=job["message_id"], limit=1)
+                messages = await asyncio.to_thread(
+                    find_messages, session_id=job["session_id"], message_id=job["message_id"], limit=1
+                )
                 if not messages:
                     raise ValueError("图片入库任务的来源消息不存在")
                 message = messages[0]
                 await self._handle_message(message)
-                self._journal.complete(job["session_id"], job["message_id"])
+                await asyncio.to_thread(self._journal.complete, job["session_id"], job["message_id"])
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self._journal.fail(job, str(exc), 1 + int(global_config.a_memorix.image_memory.job_max_retries))
-                logger.warning(f"图片记忆写入失败，任务已保留: {exc}", exc_info=True)
+                retryable = _image_error_retryable(exc)
+                await asyncio.to_thread(
+                    self._journal.fail, job, json.dumps(image_error_details(exc), ensure_ascii=False),
+                    1 + int(global_config.a_memorix.image_memory.job_max_retries), retryable=retryable,
+                )
+                logger.warning(f"图片记忆写入失败，任务已保留: retryable={retryable} error={exc}", exc_info=True)
 
     async def _compensation_loop(self) -> None:
         """处理持久化的晚到描述任务，进程中断后由租约重新领取。"""
@@ -941,13 +963,29 @@ class ImageMemoryWritebackService:
             raise ValueError("图片消息缺少真实 chat_id 或 message_id")
         timestamp = message.timestamp.timestamp()
         user_statement = self._explicit_user_text(components)
+        component_states = (
+            await asyncio.to_thread(self._journal.components, chat_id, message_id)
+            if self._journal is not None else {}
+        )
         failures: List[Exception] = []
         for component_path, component in image_components:
             if component_paths is not None and component_path not in component_paths:
                 continue
+            previous = component_states.get(component_path)
+            if previous is not None and previous["status"] == "done":
+                component.binary_data = b""
+                continue
             try:
+                if previous is not None and previous["status"] == "permanent_failure":
+                    error = previous["error"]
+                    raise ImageAssetValidationError(error["message"], code=error["code"])
                 if not component.binary_data:
                     await component.load_image_binary()
+                await asyncio.to_thread(
+                    ImageAssetStore.inspect_payload, bytes(component.binary_data),
+                    max_bytes=global_config.a_memorix.image_memory.max_bytes,
+                    max_pixels=global_config.a_memorix.image_memory.max_pixels,
+                )
                 result = await memory_service.image_memory(
                     action="ingest",
                     image_bytes=bytes(component.binary_data),
@@ -969,7 +1007,9 @@ class ImageMemoryWritebackService:
                 if not result.get("success"):
                     raise RuntimeError(str(result.get("error") or "图片记忆写入失败"))
 
-                cached_description = image_manager.get_cached_image_description(component.binary_hash)
+                cached_description = await asyncio.to_thread(
+                    image_manager.get_cached_image_description, component.binary_hash
+                )
                 description = (
                     f"[图片：{cached_description}]" if cached_description else str(component.content or "").strip()
                 )
@@ -979,14 +1019,29 @@ class ImageMemoryWritebackService:
                         content_hash=str(result.get("content_hash") or component.binary_hash),
                         text=description,
                     )
+                if self._journal is not None:
+                    await asyncio.to_thread(
+                        self._journal.record_component, chat_id, message_id, component_path, "done"
+                    )
             except Exception as exc:
                 exc.add_note(f"图片组件处理失败: message_id={message_id}, component_path={component_path}")
+                if self._journal is not None and (
+                    previous is None or previous["status"] != "permanent_failure"
+                ):
+                    detail = image_error_details(exc)
+                    permanent = isinstance(exc, ImageAssetValidationError)
+                    if permanent:
+                        detail["code"] = exc.code
+                    await asyncio.to_thread(
+                        self._journal.record_component, chat_id, message_id, component_path,
+                        "permanent_failure" if permanent else "retryable_failure", detail,
+                    )
                 failures.append(exc)
             finally:
                 # 聊天记录只保留图片路径和哈希，需要时可重新载入，避免长期持有原始二进制。
                 component.binary_data = b""
         if failures:
-            # 处理完所有组件后完整暴露失败，任务保留供重试，已成功组件由外部引用去重。
+            # 成功和永久失败的组件不重复执行；仅重试仍可能恢复的组件，消息仍如实标记失败。
             raise ExceptionGroup("消息中的图片组件处理失败", failures)
         return True
 

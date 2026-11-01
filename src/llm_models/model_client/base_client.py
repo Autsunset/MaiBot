@@ -142,6 +142,9 @@ class APIResponse:
     """图片嵌入客户端计算的协议指纹；自动适配图片嵌入协议时填充，
     编排器据此透传给上层，其余场景保持 None 并沿用默认指纹算法。"""
 
+    request_timings: Dict[str, float] = field(default_factory=dict)
+    """逻辑请求的排队、失败调用、最终调用及总耗时，仅用于诊断。"""
+
     @property
     def content(self) -> str | None:
         """只读派生模型可见正文。"""
@@ -251,6 +254,7 @@ class RequestTraceContext:
     current_attempt_started_at: float = 0.0
     rate_limit_wait_seconds: float = 0.0
     generation_attempts: List[GenerationAttempt] = field(default_factory=list)
+    queue_wait_seconds: float = 0.0
 
     def replace_attempt_status(self, attempt_number: int, status: str) -> None:
         """更新指定 Provider 尝试的后续调度状态。"""

@@ -222,3 +222,28 @@ description = "External planner recovery。"
 display_name = "External planner continuation"
 advanced = true
 description = "External planner continuation。"
+
+[response_splitter]
+display_name = "Reply boundary selection"
+advanced = true
+description = "Select original-text boundaries for code slicing without rewriting the reply."
+
+[maisaka_expression_selector]
+display_name = "Chat expression selection"
+advanced = true
+description = "Select available expressions for the current conversation."
+
+[maisaka_replyer_document]
+display_name = "Article and post writing"
+advanced = true
+description = "Write a complete article or community post in the bot's own identity using supplied material."
+
+[maisaka_wait_reminder]
+display_name = "Repeated waiting reminder"
+advanced = true
+description = "Remind the planner to wait longer or end a repeatedly waiting session."
+
+[reply_supplement]
+display_name = "Reply supplements"
+advanced = true
+description = "Select quotes, attachments, and mentions for a planned reply without rewriting its body."

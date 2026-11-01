@@ -28,6 +28,14 @@ class InspectedImage:
     frame_count: int
 
 
+class ImageAssetValidationError(ValueError):
+    """原始图片不满足入库契约，重复请求不会改变结果。"""
+
+    def __init__(self, message: str, *, code: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 class ImageAssetStore:
     """在受控目录中按原始入库字节的 SHA-256 保存静态图片。"""
 
@@ -42,11 +50,18 @@ class ImageAssetStore:
         return hashlib.sha256(image_bytes).hexdigest()
 
     def inspect(self, image_bytes: bytes) -> InspectedImage:
+        return self.inspect_payload(image_bytes, max_bytes=self.max_bytes, max_pixels=self.max_pixels)
+
+    @staticmethod
+    def inspect_payload(image_bytes: bytes, *, max_bytes: int, max_pixels: int) -> InspectedImage:
+        """共享无写入预检，让宿主与实际资产入库使用同一套格式和大小规则。"""
         payload = bytes(image_bytes)
         if not payload:
-            raise ValueError("图片内容为空")
-        if len(payload) > self.max_bytes:
-            raise ValueError(f"图片超过大小限制: {len(payload)} > {self.max_bytes}")
+            raise ImageAssetValidationError("图片内容为空", code="empty_image")
+        if len(payload) > max_bytes:
+            raise ImageAssetValidationError(
+                f"图片超过大小限制: {len(payload)} > {max_bytes}", code="byte_limit"
+            )
 
         from PIL import Image as PILImage
         from PIL import UnidentifiedImageError
@@ -57,13 +72,17 @@ class ImageAssetStore:
             with PILImage.open(io.BytesIO(payload)) as image:
                 image_format = str(image.format or "").upper()
                 if image_format not in _FORMAT_TO_MIME:
-                    raise ValueError(f"不支持的图片格式: {image_format or 'unknown'}")
+                    raise ImageAssetValidationError(
+                        f"不支持的图片格式: {image_format or 'unknown'}", code="unsupported_format"
+                    )
                 width, height = int(image.width), int(image.height)
                 frame_count = int(getattr(image, "n_frames", 1) or 1)
-        except (UnidentifiedImageError, OSError) as exc:
-            raise ValueError("无法解析图片内容") from exc
-        if width <= 0 or height <= 0 or width * height > self.max_pixels:
-            raise ValueError(f"图片像素超过限制: {width}x{height}")
+        except PILImage.DecompressionBombError as exc:
+            raise ImageAssetValidationError("图片像素超过解码安全限制", code="pixel_limit") from exc
+        except (UnidentifiedImageError, OSError, SyntaxError) as exc:
+            raise ImageAssetValidationError("无法解析图片内容", code="invalid_image") from exc
+        if width <= 0 or height <= 0 or width * height > max_pixels:
+            raise ImageAssetValidationError(f"图片像素超过限制: {width}x{height}", code="pixel_limit")
         return InspectedImage(
             byte_size=len(payload),
             extension="jpg" if image_format == "JPEG" else image_format.lower(),

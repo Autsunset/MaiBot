@@ -169,7 +169,7 @@ async def test_real_scheduler_rebuilds_each_attempt_and_rechecks_after_splitting
     original = [make_message(1 if case == "split" else 40)]
     normalized = Mock(side_effect=lambda items, **kwargs: [make_message(40)] if case == "split" else items)
     scope = {
-        "asyncio": asyncio, "datetime": datetime, "inspect": inspect,
+        "asyncio": asyncio, "datetime": datetime, "inspect": inspect, "time": time,
         "get_request_image_limit": get_request_image_limit,
         "limit_context_images": limit_context_images,
         "normalize_context_images": normalized,
@@ -221,6 +221,7 @@ async def test_real_scheduler_rebuilds_each_attempt_and_rechecks_after_splitting
         _build_client_request=lambda **kwargs: SimpleNamespace(**kwargs),
         _attempt_request_on_model_with_timeout=send,
         _adjust_model_usage=Mock(),
+        _record_request_timing=Mock(return_value={}),
     )
     await scope["_execute_request"](
         fake,

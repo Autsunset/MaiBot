@@ -878,6 +878,12 @@ class EmojiManager:
         return selected_emoji
 
     async def replace_an_emoji_by_llm(self, new_emoji: MaiEmoji, *, session_id: str = "") -> bool:
+        """保留旧的布尔接口；内部注册流程使用三态结果区分策略跳过和失败。"""
+        return await self._replace_an_emoji_outcome(new_emoji, session_id=session_id) == "registered"
+
+    async def _replace_an_emoji_outcome(
+        self, new_emoji: MaiEmoji, *, session_id: str = ""
+    ) -> EmojiRegisterStatus:
         """
         使用 LLM 决策替换一个表情包
 
@@ -886,7 +892,7 @@ class EmojiManager:
         Args:
             new_emoji (MaiEmoji): 新添加的表情包对象
         Returns:
-            return (bool): 是否成功替换了一个表情包
+            return (EmojiRegisterStatus): 已注册、正常跳过或真实失败
         """
         # sourcery skip: use-getitem-for-re-match-groups
         probabilities = [1 / (emoji.query_count + 1) for emoji in self.emojis]
@@ -923,8 +929,8 @@ class EmojiManager:
         # 解析决策结果；兼容旧 prompt 的“删除编号X”，实际动作只取消注册。
         skip_decisions = ("不取消注册", "不删除", "do not unregister", "do not delete", "解除しない", "削除しない")
         if any(skip_text in decision for skip_text in skip_decisions):
-            logger.info("[决策] 不取消注册任何表情包")
-            return False
+            logger.info("[business-outcome] task=emoji outcome=policy_skip 不取消注册任何表情包")
+            return "skipped"
         try:
             match = re.search(
                 r"(?:取消注册|删除)编号(\d+)|(?:unregister|delete)\s+number\s+(\d+)|番号(\d+)を(?:解除|削除)",
@@ -933,7 +939,7 @@ class EmojiManager:
             )
         except Exception as e:
             logger.error(f"[决策] 解析决策结果时出错: {e}")
-            return False
+            return "failed"
         if match:
             matched_number = next(group for group in match.groups() if group)
             emoji_index = int(matched_number) - 1  # 转换为0-based索引
@@ -941,15 +947,16 @@ class EmojiManager:
             if 0 <= emoji_index < len(selected_emojis):
                 emoji_to_unregister = selected_emojis[emoji_index]
                 logger.info(f"[决策] 取消注册表情包: {emoji_to_unregister.description}")
-                if self.unregister_emoji(emoji_to_unregister):
-                    register_status = self.register_emoji_to_db(new_emoji)
+                if await asyncio.to_thread(self.unregister_emoji, emoji_to_unregister):
+                    register_status = await asyncio.to_thread(self.register_emoji_to_db, new_emoji)
                     if register_status == "registered":
                         self.emojis.append(new_emoji)
                         self._emoji_num = len(self.emojis)
                         logger.info(f"[register_emoji] 成功替换并注册新表情包: {new_emoji.description}")
-                        return True
+                        return "registered"
                     if register_status == "skipped":
                         logger.info(f"[register_emoji] Replacement emoji was already registered: {new_emoji.description}")
+                        return "skipped"
                     else:
                         logger.error(f"[register_emoji] Failed to register replacement emoji: {new_emoji.description}")
                 else:
@@ -958,7 +965,7 @@ class EmojiManager:
                 logger.error(f"[决策] 无效的表情包编号: {emoji_index + 1}")
         else:
             logger.error("[决策] 未能解析取消注册编号")
-        return False
+        return "failed"
 
     async def review_emoji_for_registration(self, target_emoji: MaiEmoji, *, session_id: str = "") -> bool:
         """注册前审核表情包内容，审核关闭时直接通过。"""
@@ -1274,11 +1281,12 @@ class EmojiManager:
             logger.warning(
                 f"[register_emoji] Emoji limit {global_config.emoji.max_reg_num} reached, trying replacement"
             )
-            replaced = await self.replace_an_emoji_by_llm(target_emoji)
-            if not replaced:
+            replacement_status = await self._replace_an_emoji_outcome(target_emoji)
+            if replacement_status == "failed":
                 logger.error("[register_emoji] Failed to replace existing emoji")
-                return "failed"
-            return "registered"
+            elif replacement_status == "skipped":
+                logger.info("[register_emoji] Replacement skipped by policy; existing emojis retained")
+            return replacement_status
 
         register_status = self.register_emoji_to_db(target_emoji)
         if register_status == "registered":

@@ -189,7 +189,7 @@ def test_bot_and_webui_loops_share_a_single_concurrency_budget() -> None:
     assert not pool._buckets
 
 
-def timeout_wrapper(pool, *, hard_timeout=0.05, queue_timeout=1.0, max_queue_size=64):
+def timeout_wrapper(pool, *, hard_timeout=0.05, queue_timeout=1.0, max_queue_size=64, trace=None):
     """Exercise the actual orchestration method with only I/O replaced."""
     tree = ast.parse(Path("src/llm_models/utils_model.py").read_text())
     cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "LLMOrchestrator")
@@ -200,6 +200,7 @@ def timeout_wrapper(pool, *, hard_timeout=0.05, queue_timeout=1.0, max_queue_siz
     snapshot = Mock(return_value=Path("/tmp/synthetic-request-snapshot.json"))
     scope = {
         "asyncio": asyncio,
+        "time": time,
         "model_request_admission": pool,
         "ModelQueueFullError": ModelQueueFullError,
         "ModelQueueTimeoutError": ModelQueueTimeoutError,
@@ -225,7 +226,7 @@ def timeout_wrapper(pool, *, hard_timeout=0.05, queue_timeout=1.0, max_queue_siz
             model_identifier="vision", max_concurrency=1,
             max_queue_size=max_queue_size, queue_timeout=queue_timeout,
         ),
-        trace_context=None,
+        trace_context=trace,
     )
 
     async def execute():
@@ -239,7 +240,8 @@ def timeout_wrapper(pool, *, hard_timeout=0.05, queue_timeout=1.0, max_queue_siz
 @pytest.mark.asyncio
 async def test_queue_wait_does_not_consume_inference_deadline() -> None:
     pool = ModelRequestAdmission()
-    execute, orchestrator, snapshot = timeout_wrapper(pool, hard_timeout=0.02)
+    trace = SimpleNamespace(queue_wait_seconds=0.0)
+    execute, orchestrator, snapshot = timeout_wrapper(pool, hard_timeout=0.02, trace=trace)
     holder = slot(pool)
     await holder.__aenter__()
     started = time.monotonic()
@@ -249,6 +251,7 @@ async def test_queue_wait_does_not_consume_inference_deadline() -> None:
     await holder.__aexit__(None, None, None)
     assert await task == "response"
     assert time.monotonic() - started > 0.02
+    assert trace.queue_wait_seconds >= 0.03
     snapshot.assert_not_called()
     assert not pool._buckets
 

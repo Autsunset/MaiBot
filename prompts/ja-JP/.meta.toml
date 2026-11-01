@@ -222,3 +222,28 @@ description = "外部 Planner 中断復帰。"
 display_name = "外部 Planner 継続実行"
 advanced = true
 description = "外部 Planner 継続実行。"
+
+[response_splitter]
+display_name = "返信の区切り選択"
+advanced = true
+description = "原文の候補境界だけを選び、本文を書き換えずコードで分割します。"
+
+[maisaka_expression_selector]
+display_name = "会話表現の選択"
+advanced = true
+description = "現在の会話状況に合う利用可能な表現を選びます。"
+
+[maisaka_replyer_document]
+display_name = "記事と投稿の執筆"
+advanced = true
+description = "資料を参考に、ボット自身の立場で完全な記事やコミュニティ投稿を執筆します。"
+
+[maisaka_wait_reminder]
+display_name = "連続待機の注意"
+advanced = true
+description = "待機を延長するか、待機が続く会話を終了するようプランナーに促します。"
+
+[reply_supplement]
+display_name = "返信の補足"
+advanced = true
+description = "送信予定の返信本文を書き換えず、引用、添付、メンションを選びます。"

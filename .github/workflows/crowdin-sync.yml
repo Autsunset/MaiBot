@@ -18,9 +18,10 @@ permissions:
   contents: write
   pull-requests: write
 
+# Official Crowdin credentials and scheduled branches are not available in forks.
 jobs:
   sync-current-branch:
-    if: github.event_name != 'schedule'
+    if: github.repository == 'Mai-with-u/MaiBot' && github.event_name != 'schedule'
     runs-on: ubuntu-24.04
 
     steps:
@@ -44,7 +45,7 @@ jobs:
           CROWDIN_PERSONAL_TOKEN: ${{ secrets.CROWDIN_PERSONAL_TOKEN }}
 
   sync-scheduled-branches:
-    if: github.event_name == 'schedule'
+    if: github.repository == 'Mai-with-u/MaiBot' && github.event_name == 'schedule'
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false

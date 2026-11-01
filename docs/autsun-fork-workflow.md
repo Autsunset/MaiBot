@@ -112,3 +112,22 @@ the prepared Compose mounts before deploying a newer upstream version.
 
 Never commit runtime TOML files, API tokens, session cookies, databases, request
 snapshots, real chat images or model weights.
+
+## GitHub Actions in the fork
+
+The official Docker Hub publishing workflows (Main and Dev) and Crowdin
+translation synchronization are restricted to `Mai-with-u/MaiBot` at job level.
+They are skipped in `Autsunset/MaiBot`; ordinary validation workflows keep their
+existing triggers and behavior.
+
+The inherited publishing jobs previously failed before building images because
+the fork had no Docker Hub publishing credentials. Crowdin also had no project
+ID or token, and its scheduled `r-dev` checkout targeted a branch absent from
+the fork. These are publishing and synchronization configuration failures, not
+MaiBot test results or evidence of a failed NAS deployment.
+
+Keep the repository guards when merging official updates. Fork-specific image
+publishing, if needed later, requires a deliberate workflow change and separate
+credentials. Do not disable code checks or account-wide failure notifications to
+hide unrelated CI failures. Historical failed runs remain in GitHub's history;
+these guards affect new runs only.

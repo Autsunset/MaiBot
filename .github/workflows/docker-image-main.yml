@@ -18,8 +18,10 @@ on:
         default: 'main'
 
 # Workflow's jobs
+# Official publishing credentials are not available in forks.
 jobs:
   build-amd64:
+    if: github.repository == 'Mai-with-u/MaiBot'
     name: Build AMD64 Image
     runs-on: ubuntu-24.04
     outputs:
@@ -70,6 +72,7 @@ jobs:
             VCS_REF=${{ github.sha }}
 
   build-arm64:
+    if: github.repository == 'Mai-with-u/MaiBot'
     name: Build ARM64 Image
     runs-on: ubuntu-24.04-arm
     outputs:
@@ -120,6 +123,7 @@ jobs:
             VCS_REF=${{ github.sha }}
 
   create-manifest:
+    if: github.repository == 'Mai-with-u/MaiBot'
     name: Create Multi-Arch Manifest
     runs-on: ubuntu-24.04
     needs:

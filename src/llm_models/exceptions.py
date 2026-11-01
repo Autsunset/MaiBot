@@ -102,6 +102,12 @@ class RespParseException(ResponseContextException):
     default_message = "解析响应内容时发生未知错误，请检查是否配置了正确的解析方法"
 
 
+class OutputTokenLimitError(RespParseException):
+    """输出预算耗尽，禁止将截断结果当成完整回复或按原预算盲目重试。"""
+
+    default_message = "模型输出达到 token 上限，响应未完整完成"
+
+
 class EmptyResponseException(ResponseContextException):
     """响应内容为空"""
 

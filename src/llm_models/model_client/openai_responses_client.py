@@ -11,6 +11,7 @@ from src.common.logger import get_logger
 from src.llm_models.exceptions import (
     EmptyResponseException,
     NetworkConnectionError,
+    OutputTokenLimitError,
     ReqAbortException,
     RespNotOkException,
     RespParseException,
@@ -454,6 +455,8 @@ def _parse_completed_response(
     status = str(_get_value(response, "status", "") or "")
     if status in {"failed", "incomplete", "cancelled"}:
         details = _get_value(response, "error") or _get_value(response, "incomplete_details") or status
+        if status == "incomplete" and _get_value(details, "reason") == "max_output_tokens":
+            raise OutputTokenLimitError(response, f"Responses 输出达到 token 上限，响应未完整完成: {details}")
         raise RespParseException(response, f"Responses 请求未完整完成: {details}")
 
     output = list(_get_value(response, "output", []) or [])
@@ -652,6 +655,10 @@ async def _consume_response_stream(
                     failed_response,
                     "incomplete_details",
                 )
+                if event_type == "response.incomplete" and _get_value(details, "reason") == "max_output_tokens":
+                    raise OutputTokenLimitError(
+                        failed_response, f"Responses 流式输出达到 token 上限，响应未完整完成: {details}"
+                    )
                 raise RespParseException(failed_response, f"Responses 流式请求未完整完成: {details or event_type}")
             elif event_type == "error":
                 raise RespParseException(event, f"Responses 流式请求返回错误: {_get_value(event, 'message', event)}")

@@ -29,6 +29,7 @@ from src.llm_models.exceptions import (
     LLMTaskTimeoutError,
     ModelAttemptFailed,
     NetworkConnectionError,
+    OutputTokenLimitError,
     ReqAbortException,
     RespNotOkException,
     RespParseException,
@@ -67,6 +68,8 @@ from src.llm_models.payload_content.tool_option import (
 )
 from src.llm_models.utils import compress_messages, llm_usage_recorder
 from src.services.model_task_usage_service import track_model_task_usage
+
+from .request_admission import ModelQueueFullError, ModelQueueTimeoutError, model_request_admission
 
 install(extra_lines=3)
 
@@ -1249,6 +1252,17 @@ class LLMOrchestrator:
                 )
                 raise ModelAttemptFailed(f"模型 '{model_info.name}' 遇到硬错误", original_exception=e) from e
 
+            except OutputTokenLimitError as e:
+                await ensure_attempt_snapshot(e)
+                original_error_info = self._get_original_error_info(e)
+                logger.warning(
+                    f"任务 '{self.request_type or self.task_name}' 的模型 '{model_info.name}' 输出预算耗尽，"
+                    f"停止使用相同预算重试；请检查任务输出长度与推理 token 预算。{original_error_info}"
+                )
+                raise ModelAttemptFailed(
+                    f"模型 '{model_info.name}' 输出预算耗尽", original_exception=e,
+                ) from e
+
             except RespParseException as e:
                 await ensure_attempt_snapshot(e)
                 original_error_info = self._get_original_error_info(e)
@@ -1308,11 +1322,42 @@ class LLMOrchestrator:
         全部模型都触发 hard_timeout 时，最后一个 LLMTaskTimeoutError 上抛给调用方。
         """
         timeout_s = self.model_for_task.hard_timeout
+        model_info = request.model_info
         try:
-            return await asyncio.wait_for(
-                self._attempt_request_on_model(api_provider, client, request=request),
-                timeout=timeout_s,
+            # 先取得模型名额再开始推理计时，避免单槽模型的后台排队耗尽 hard_timeout。
+            async with model_request_admission.slot(
+                (api_provider.name, model_info.model_identifier),
+                max_concurrency=model_info.max_concurrency,
+                max_queue_size=model_info.max_queue_size,
+                queue_timeout=model_info.queue_timeout,
+            ) as queue_wait:
+                if model_info.max_concurrency and queue_wait >= 0.05:
+                    logger.info(
+                        f"[model-admission] model={model_name} provider={api_provider.name} "
+                        f"queue_wait={queue_wait:.2f}s concurrency={model_info.max_concurrency}"
+                    )
+                return await asyncio.wait_for(
+                    self._attempt_request_on_model(api_provider, client, request=request),
+                    timeout=timeout_s,
+                )
+        except (ModelQueueFullError, ModelQueueTimeoutError) as error:
+            snapshot_path = await asyncio.to_thread(
+                save_failed_request_snapshot,
+                api_provider=api_provider,
+                client_type=api_provider.client_type,
+                error=error,
+                internal_request=serialize_client_request_snapshot(request),
+                model_info=model_info,
+                operation="model.queue_full" if isinstance(error, ModelQueueFullError) else "model.queue_timeout",
+                provider_request={
+                    "max_concurrency": model_info.max_concurrency,
+                    "max_queue_size": model_info.max_queue_size,
+                    "queue_timeout": model_info.queue_timeout,
+                },
+                trace_context=request.trace_context,
             )
+            attach_request_snapshot(error, snapshot_path)
+            raise
         except asyncio.TimeoutError as e:
             task_display = self.request_type or self.task_name or "未知任务"
             timeout_error = LLMTaskTimeoutError(

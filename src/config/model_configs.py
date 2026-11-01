@@ -338,6 +338,28 @@ class ModelInfo(ConfigBase):
     )
     """强制流式输出模式 (若模型不支持非流式输出, 请设置为true启用强制流式输出, 默认值为false)"""
 
+    max_concurrency: int = Field(
+        default=0,
+        ge=0,
+        json_schema_extra={"x-widget": "input", "advanced": True},
+    )
+    """单个模型的最大并发请求数；0 表示不限制。相同提供商和模型标识共享限额，包括 Bot 与 WebUI 请求。"""
+
+    max_queue_size: int = Field(
+        default=64,
+        ge=0,
+        json_schema_extra={"x-widget": "input", "advanced": True},
+    )
+    """启用并发限制时允许排队的请求数；0 表示没有空闲名额就立即报错，不影响正在执行的请求。"""
+
+    queue_timeout: float = Field(
+        default=120.0,
+        ge=1.0,
+        allow_inf_nan=False,
+        json_schema_extra={"x-widget": "input", "advanced": True},
+    )
+    """启用并发限制时的最长排队时间（秒），与任务 hard_timeout 分开计时；排队超时不会发送请求。"""
+
     visual: bool = Field(
         default=False,
         json_schema_extra={

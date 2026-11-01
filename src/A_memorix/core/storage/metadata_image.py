@@ -516,6 +516,49 @@ class MetadataImageMixin:
             counts["description"] = description.rowcount
         return counts
 
+    def prepare_image_description_recovery(
+        self, *, occurrence_id: str, description_hash: str, lease_token: str,
+        dry_run: bool = True, lease_seconds: float = 900.0,
+    ) -> Dict[str, Any]:
+        """显式恢复一个已尝试任务，不清零计数或错误，也不抢占有效租约。"""
+        now = _now()
+        with self.transaction(immediate=not dry_run) as database:
+            row = database.execute(
+                "SELECT c.*, o.chat_id, o.message_id, o.occurred_at, o.scope_type, "
+                "o.status AS occurrence_status, a.status AS asset_status "
+                "FROM image_description_compensations AS c "
+                "JOIN image_occurrences AS o ON o.occurrence_id=c.occurrence_id "
+                "JOIN image_assets AS a ON a.asset_id=o.asset_id "
+                "WHERE c.occurrence_id=? AND c.description_hash=?",
+                (occurrence_id, description_hash),
+            ).fetchone()
+            if row is None:
+                return {"success": True, "eligible": False, "reason": "not_found"}
+            item = dict(row)
+            reason = ""
+            if item["status"] == "done":
+                reason = "already_done"
+            elif item["status"] == "running" and float(item["lease_until"]) >= now:
+                reason = "lease_active"
+            elif item["status"] not in {"failed", "pending", "running"} or int(item["attempt_count"]) < 1:
+                reason = "not_previously_attempted"
+            elif (
+                item["occurrence_status"] != "active" or item["asset_status"] != "active"
+                or item["scope_type"] != "chat" or not item["chat_id"] or not item["message_id"]
+                or item["occurred_at"] is None
+            ):
+                reason = "source_unavailable"
+            if reason or dry_run:
+                return {"success": True, "eligible": not reason, "reason": reason, "item": item}
+            if not lease_token:
+                raise ValueError("恢复图片描述任务需要租约标识")
+            database.execute(
+                "UPDATE image_description_compensations SET status='running',lease_token=?,lease_until=?,"
+                "attempt_count=attempt_count+1,updated_at=? WHERE occurrence_id=? AND description_hash=?",
+                (lease_token, now + max(1.0, lease_seconds), now, occurrence_id, description_hash),
+            )
+        return {"success": True, "eligible": True, "item": item, "lease_token": lease_token}
+
     def claim_image_description_compensations(
         self,
         *,

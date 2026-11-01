@@ -6,6 +6,7 @@ import json
 import sqlite3
 import time
 import traceback
+import uuid
 
 
 def image_error_details(error: BaseException) -> Dict[str, Any]:
@@ -58,6 +59,14 @@ class ImageWritebackJournal:
                 status TEXT NOT NULL,
                 error_json TEXT NOT NULL,
                 recorded_at REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS image_description_recovery_history (
+                recovery_id TEXT PRIMARY KEY,
+                before_json TEXT NOT NULL,
+                result_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'prepared',
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
             );
         """)
         self.connection.commit()
@@ -162,6 +171,24 @@ class ImageWritebackJournal:
                 "AND c.message_id=jobs.message_id AND c.status='retryable_failure'))", (time.time(),),
             )
         return cursor.rowcount
+
+    def begin_description_recovery(self, before: Dict[str, Any]) -> str:
+        recovery_id = uuid.uuid4().hex
+        with self._lock, self.connection:
+            now = time.time()
+            self.connection.execute(
+                "INSERT INTO image_description_recovery_history(recovery_id,before_json,created_at,updated_at) "
+                "VALUES (?,?,?,?)", (recovery_id, json.dumps(before, ensure_ascii=False), now, now),
+            )
+        return recovery_id
+
+    def finish_description_recovery(self, recovery_id: str, status: str, result: Dict[str, Any]) -> None:
+        with self._lock, self.connection:
+            self.connection.execute(
+                "UPDATE image_description_recovery_history SET status=?,result_json=?,updated_at=? "
+                "WHERE recovery_id=?",
+                (status, json.dumps(result, ensure_ascii=False), time.time(), recovery_id),
+            )
 
     def close(self) -> None:
         with self._lock:

@@ -909,40 +909,101 @@ class ImageMemoryWritebackService:
             return
         lease_token = str(claimed.get("lease_token") or "")
         for item in claimed.get("items") or []:
-            occurrence_id = str(item.get("occurrence_id") or "")
-            description_hash = str(item.get("description_hash") or "")
-            try:
-                result = await memory_service.ingest_summary(
-                    external_id=(f"image_description_compensation:{occurrence_id}:{description_hash}"),
-                    chat_id=str(item["chat_id"]),
-                    text="",
-                    participants=[],
-                    time_end=float(item["occurred_at"]) + 0.001,
-                    metadata={
-                        "generate_from_chat": True,
-                        "context_length": int(
-                            global_config.a_memorix.integration.chat_summary_writeback_context_length
-                        ),
-                        "writeback_source": "image_description_compensation",
-                        "trigger": "image_description_ready",
-                        "image_message_id": str(item["message_id"]),
-                        "summary_review_count": 2,
-                    },
-                    respect_filter=True,
-                )
-                success = result.success
-                error = "" if success else result.detail
-            except Exception as exc:
-                success = False
-                error = str(exc)
-            await memory_service.image_memory(
-                action="complete_description_compensation",
-                occurrence_id=occurrence_id,
-                description_hash=description_hash,
-                lease_token=lease_token,
-                success=success,
-                error=error,
+            await self._run_description_compensation(item, lease_token)
+
+    async def _run_description_compensation(self, item: Dict[str, Any], lease_token: str) -> Dict[str, Any]:
+        occurrence_id = str(item.get("occurrence_id") or "")
+        description_hash = str(item.get("description_hash") or "")
+        receipt: Dict[str, Any] = {}
+        try:
+            result = await memory_service.ingest_summary(
+                external_id=(f"image_description_compensation:{occurrence_id}:{description_hash}"),
+                chat_id=str(item["chat_id"]),
+                text="",
+                participants=[],
+                time_end=float(item["occurred_at"]) + 0.001,
+                metadata={
+                    "generate_from_chat": True,
+                    "context_length": int(
+                        global_config.a_memorix.integration.chat_summary_writeback_context_length
+                    ),
+                    "writeback_source": "image_description_compensation",
+                    "trigger": "image_description_ready",
+                    "image_message_id": str(item["message_id"]),
+                    "summary_review_count": 2,
+                },
+                respect_filter=True,
             )
+            receipt = result.to_dict()
+            success = result.success
+            error = "" if success else result.detail
+        except Exception as exc:
+            success = False
+            error = str(exc)
+        completed = await memory_service.image_memory(
+            action="complete_description_compensation",
+            occurrence_id=occurrence_id,
+            description_hash=description_hash,
+            lease_token=lease_token,
+            success=success,
+            error=error,
+        )
+        acknowledged = bool(completed.get("success"))
+        outcome = "failed"
+        if success and acknowledged:
+            outcome = "policy_skip" if receipt["detail"] == "chat_filtered" else "recovered"
+        return {
+            **receipt, "success": success and acknowledged, "outcome": outcome,
+            "detail": (receipt["detail"] if success else error) if acknowledged else "compensation_lease_not_owned",
+        }
+
+    async def recover_description_compensation(
+        self, *, occurrence_id: str, description_hash: str, dry_run: bool = True,
+    ) -> Dict[str, Any]:
+        """逐项预览与恢复，保留旧错误和累计尝试次数，不调用批量重置接口。"""
+        from src.chat.message_receive.chat_manager import chat_manager
+
+        target = {"occurrence_id": occurrence_id, "description_hash": description_hash}
+        preview = await memory_service.image_memory(action="prepare_description_recovery", dry_run=True, **target)
+        if not preview.get("success") or not preview.get("eligible"):
+            return preview
+        item = preview["item"]
+        session = await asyncio.to_thread(chat_manager.get_existing_session_by_session_id, item["chat_id"])
+        if session is None:
+            return {"success": True, "eligible": False, "reason": "source_chat_unavailable"}
+        if dry_run:
+            return preview
+
+        journal = await asyncio.to_thread(ImageWritebackJournal, self._journal_path)
+        recovery_id = ""
+        claimed: Optional[Dict[str, Any]] = None
+        try:
+            recovery_id = await asyncio.to_thread(journal.begin_description_recovery, item)
+            claimed = await memory_service.image_memory(action="prepare_description_recovery", dry_run=False, **target)
+            if not claimed.get("success") or not claimed.get("eligible"):
+                await asyncio.to_thread(journal.finish_description_recovery, recovery_id, "not_claimed", claimed)
+                return {**claimed, "recovery_id": recovery_id}
+            result = await asyncio.wait_for(
+                self._run_description_compensation(claimed["item"], claimed["lease_token"]), 840.0
+            )
+            await asyncio.to_thread(
+                journal.finish_description_recovery, recovery_id, "done" if result["success"] else "failed", result
+            )
+            return {**result, "eligible": True, "recovery_id": recovery_id,
+                    "attempt_count": int(claimed["item"]["attempt_count"]) + 1}
+        except BaseException as exc:
+            if claimed is not None and claimed.get("eligible"):
+                await asyncio.shield(memory_service.image_memory(
+                    action="complete_description_compensation", lease_token=claimed["lease_token"],
+                    success=False, error=f"{type(exc).__name__}: {exc}", **target,
+                ))
+            if recovery_id:
+                await asyncio.shield(asyncio.to_thread(
+                    journal.finish_description_recovery, recovery_id, "interrupted", image_error_details(exc)
+                ))
+            raise
+        finally:
+            await asyncio.to_thread(journal.close)
 
     @staticmethod
     def _explicit_user_text(components: List[Any]) -> str:

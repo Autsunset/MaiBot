@@ -249,6 +249,12 @@ class VectorRebuildRequest(BaseModel):
     include_relations: Optional[bool] = None
 
 
+class DescriptionRecoveryRequest(BaseModel):
+    occurrence_id: str = Field(..., min_length=1, max_length=128)
+    description_hash: str = Field(..., min_length=1, max_length=128)
+    dry_run: bool = True
+
+
 class MemoryConfigUpdateRequest(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
 
@@ -4896,6 +4902,12 @@ async def retry_failed_image_memory_jobs():
     if not result.get("success"):
         raise HTTPException(status_code=503, detail=str(result.get("error") or "图片任务重新排队失败"))
     return result
+
+
+@router.post("/image-jobs/recover-description")
+async def recover_image_description(payload: DescriptionRecoveryRequest):
+    """只处理明确指定的一个历史版本；默认预览，恢复前保留完整失败回执。"""
+    return await memory_automation_service.image_writeback.recover_description_compensation(**payload.model_dump())
 
 
 @router.post("/images/{asset_id}/search")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Dict, Optional, Sequence
 
+import asyncio
 import base64
 import uuid
 
@@ -137,6 +138,16 @@ class MemoryImageService(KernelServiceBase):
             }
         if operation == "process_jobs":
             return await runtime.process_jobs_once()
+        if operation == "prepare_description_recovery":
+            occurrence_id = str(kwargs.get("occurrence_id") or "").strip()
+            description_hash = str(kwargs.get("description_hash") or "").strip()
+            if not occurrence_id or not description_hash:
+                raise ValueError("必须指定唯一的图片出现记录和描述版本")
+            return await asyncio.to_thread(
+                runtime.metadata_store.prepare_image_description_recovery,
+                occurrence_id=occurrence_id, description_hash=description_hash,
+                lease_token=uuid.uuid4().hex, dry_run=bool(kwargs.get("dry_run", True)),
+            )
         if operation == "claim_description_compensations":
             lease_token = uuid.uuid4().hex
             items = runtime.metadata_store.claim_image_description_compensations(

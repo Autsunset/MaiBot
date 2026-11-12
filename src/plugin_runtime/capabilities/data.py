@@ -128,6 +128,7 @@ class RuntimeDataCapabilityMixin:
                     limit=args.get("limit"),
                     order_by=args.get("order_by"),
                     single_result=args.get("single_result", False),
+                    offset=self._database_offset(args),
                 )
             elif query_type == "create":
                 if not (data := args.get("data")):
@@ -198,11 +199,21 @@ class RuntimeDataCapabilityMixin:
                 limit=args.get("limit"),
                 order_by=args.get("order_by"),
                 single_result=args.get("single_result", False),
+                offset=self._database_offset(args),
             )
             return result
         except Exception as e:
             logger.error(f"[cap.database.get] 执行失败: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
+
+    @staticmethod
+    def _database_offset(args: Dict[str, Any]) -> int:
+        offset = args.get("offset", 0)
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise ValueError("offset 必须为非负整数")
+        if offset and not args.get("order_by"):
+            raise ValueError("分页查询必须指定 order_by")
+        return offset
 
     async def _cap_database_delete(self, plugin_id: str, capability: str, args: Dict[str, Any]) -> Any:
         from src.services import database_service 

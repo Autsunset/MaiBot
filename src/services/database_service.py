@@ -107,6 +107,7 @@ async def db_get(
     limit: Optional[int] = None,
     order_by: Optional[str | list[str]] = None,
     single_result: bool = False,
+    offset: int = 0,
 ) -> Optional[dict[str, Any]] | list[dict[str, Any]]:
     try:
         with get_db_session(auto_commit=False) as session:
@@ -116,6 +117,8 @@ async def db_get(
             statement = _apply_order_by(statement, model_class, order_by)
             if limit:
                 statement = statement.limit(limit)
+            if offset:
+                statement = statement.offset(offset)
             results = session.exec(cast(Any, statement)).all()
             data = [_to_dict(item) for item in results]
             if single_result:
